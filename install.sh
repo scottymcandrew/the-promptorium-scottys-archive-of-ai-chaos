@@ -13,7 +13,7 @@ CLAUDE_AGENTS_SRC="$SCRIPT_DIR/claude-agents"
 CLAUDE_AGENTS_DST="$HOME/.claude/agents"
 
 CLAUDE_SKILLS_SRC="$SCRIPT_DIR/claude-skills"
-CLAUDE_SKILLS_DST="$HOME/.claude/skills"
+CLAUDE_SKILLS_DST="$HOME/.claude/commands"
 
 CURSOR_AGENTS_SRC="$SCRIPT_DIR/coding-agents"
 CURSOR_AGENTS_DST="$HOME/.cursor/agents"
