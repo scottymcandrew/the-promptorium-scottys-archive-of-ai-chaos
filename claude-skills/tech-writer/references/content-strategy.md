@@ -131,6 +131,24 @@ Explanation:  ██░░░░░░░░ 10% (often lacking)
 Reference:    ██████░░░░ 30%
 ```
 
+### Legacy vs Modern Framing
+
+When a guide covers a technology with both legacy and modern approaches:
+
+1. **Open with the modern approach** — Tell readers who already use the modern path that they can skip the guide
+2. **Name the legacy approach explicitly** — "For environments that still use [legacy approach], continue with this guide"
+3. **Provide a migration path** — Link to migration documentation
+4. **Don't present equals** — The modern approach gets a recommendation; the legacy approach gets a "if you still need this" framing
+
+```markdown
+# Example opening
+[Product] now defaults to [modern approach]. If all your [resources] already
+use [modern approach], you can skip this guide entirely and [simple action].
+
+For environments that still use [legacy approach], continue with this guide.
+Consider [migrating](link) as a long-term solution.
+```
+
 ## Writing for Search
 
 ### Title Optimization

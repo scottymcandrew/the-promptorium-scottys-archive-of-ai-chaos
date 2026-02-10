@@ -170,6 +170,19 @@ Remove words that don't add meaning.
 | "At this point in time" | "Now" |
 | "It is important to note that" | (delete entirely) |
 
+### Decision Guide Language
+
+When writing decision guides or "choose your approach" sections, prefer constraints over recommendations:
+
+| Weak (preference) | Strong (constraint) |
+|---|---|
+| "We recommend updating your templates directly" | "Update your existing resource definitions directly" |
+| "This is the only approach that prevents drift" | "No separate module can configure resources it does not own" |
+| "Best practice is to use RBAC" | "RBAC eliminates per-vault configuration entirely" |
+| "Consider migrating" | "Migrate your remaining vaults as a long-term solution" |
+
+**Why**: Readers skip "recommended" but respect "cannot." Stating an architectural constraint prevents the "but can't you just..." conversation.
+
 ### Technical Accuracy
 
 Use correct technical terms. Don't oversimplify to the point of incorrectness.

@@ -53,6 +53,31 @@ Admin access is required to modify these settings.
 - **Don't nest**: No callouts inside callouts
 - **Position wisely**: Before the action that needs warning
 
+### When to Promote Callouts to Prose
+
+Callouts should be demoted from "framing device" to "aside" when they contain information that:
+- Changes whether the reader needs the rest of the page
+- Requires multi-sentence explanation or reasoning
+- Sets the strategic direction of the guide
+
+**Pattern: Explanation in prose, conclusion in callout**
+
+```markdown
+# Before (callout doing too much)
+:::danger[Do not do X]
+Explanation of why X is dangerous, covering multiple architectural
+reasons and edge cases. This is a lot of text in a callout.
+:::
+
+# After (prose explains, callout concludes)
+The architectural reason X is dangerous is [explanation]. This means
+[consequence]. The correct approach is [alternative].
+
+:::danger[Do not do X]
+Concise one-sentence summary of the rule.
+:::
+```
+
 ## Expandable Sections
 
 Expandables hide content until clicked. Use for detailed information that would interrupt flow.
