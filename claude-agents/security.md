@@ -2,7 +2,7 @@
 name: security
 description: Security audit specialist for vulnerability assessment. Use proactively before releases, after auth changes, when handling sensitive data, or for periodic security reviews. Thinks like an attacker so you don't learn from one.
 tools: Read, Grep, Glob, Bash
-model: sonnet
+model: inherit
 skills:
   - security
 ---

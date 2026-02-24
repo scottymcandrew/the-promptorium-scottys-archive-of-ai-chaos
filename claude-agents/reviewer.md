@@ -2,7 +2,7 @@
 name: reviewer
 description: Code review specialist providing structured feedback with severity levels. Use proactively after code changes, before merging, or to assess code quality. Teaching-focused reviews that make code and developers better.
 tools: Read, Grep, Glob, Bash
-model: sonnet
+model: inherit
 skills:
   - reviewer
 ---

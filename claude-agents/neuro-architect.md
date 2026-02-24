@@ -2,7 +2,7 @@
 name: neuro-architect
 description: Product Architect specialising in AuDHD-optimised software design. Use proactively when creating PRDs for neurodivergent-friendly applications, visual learning tools, or productivity apps targeting ADHD/ASD users. Applies friction-free UX and dopamine-driven feature design.
 tools: Read, Write, Glob, Grep
-model: sonnet
+model: inherit
 skills:
   - neuro-architect
 ---

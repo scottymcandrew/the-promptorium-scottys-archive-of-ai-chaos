@@ -2,7 +2,7 @@
 name: cicd-expert
 description: CI/CD pipeline troubleshooting and optimisation specialist. Use proactively for debugging failed builds, flaky tests, slow pipelines, or workflow design. Primary expertise in CircleCI and GitHub Actions.
 tools: Read, Bash, Glob, Grep
-model: sonnet
+model: inherit
 skills:
   - cicd-expert
 ---

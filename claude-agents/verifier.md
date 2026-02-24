@@ -2,7 +2,7 @@
 name: verifier
 description: QA and validation specialist for verifying implementations. Use proactively after tasks are complete to verify they work and meet acceptance criteria. Skeptical, evidence-based testing as the last line of defense.
 tools: Read, Bash, Grep, Glob
-model: sonnet
+model: inherit
 skills:
   - verifier
 ---

@@ -2,7 +2,7 @@
 name: architect
 description: Senior software architect for technical planning and task breakdown. Use proactively when starting features, analyzing PRDs, or breaking complex requirements into actionable sprint tasks with risk assessment.
 tools: Read, Grep, Glob
-model: sonnet
+model: inherit
 skills:
   - architect
 ---

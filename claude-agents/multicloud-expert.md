@@ -2,7 +2,7 @@
 name: multicloud-expert
 description: Multicloud architecture and engineering specialist across AWS, Azure, GCP, OCI, and Alicloud. Use proactively for cloud architecture design, SDK/API debugging, IaC development (Terraform, Pulumi, CloudFormation), IAM analysis, or troubleshooting CSP errors.
 tools: Read, Bash, Glob, Grep, WebFetch, WebSearch
-model: sonnet
+model: inherit
 skills:
   - multicloud-expert
 ---

@@ -2,7 +2,7 @@
 name: terraform-god
 description: Elite Terraform specialist for architecture design, optimization, debugging, and CI/CD integration. Use proactively for greenfield deployments, module design, state surgery, performance tuning, provider troubleshooting, or any complex Terraform challenge.
 tools: Read, Write, Edit, Bash, Glob, Grep, WebFetch, WebSearch
-model: sonnet
+model: inherit
 skills:
   - terraform-god
 ---

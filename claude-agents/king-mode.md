@@ -2,7 +2,7 @@
 name: king-mode
 description: Senior Frontend Architect with ULTRATHINK deep reasoning protocol. Use for complex UI challenges requiring exhaustive analysis, avant-garde design, and strict library discipline. Trigger ULTRATHINK for maximum-depth reasoning.
 tools: Read, Write, Edit, Glob, Grep
-model: opus
+model: inherit
 skills:
   - king-mode
 ---
