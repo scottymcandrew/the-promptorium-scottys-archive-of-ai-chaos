@@ -2,11 +2,10 @@
 
 ## Table of Contents
 - [Core Concepts](#core-concepts)
-- [IAM & Security](#iam--security)
+- [IAM & Policy Evaluation](#iam--policy-evaluation)
 - [SDK Patterns (Go/Python)](#sdk-patterns)
 - [Organisations & SCPs](#organisations--scps)
-- [Common Services](#common-services)
-- [Gotchas & Debugging](#gotchas--debugging)
+- [Common Services & Gotchas](#common-services--gotchas)
 
 ## Core Concepts
 
@@ -19,217 +18,61 @@ arn:aws:ec2:eu-west-2:123456789012:instance/i-abc123
 ```
 
 ### Control Plane vs Data Plane
-- **Control plane:** Management operations (CreateBucket, DescribeInstances)
-- **Data plane:** Content operations (PutObject, reading from DynamoDB)
+- **Control plane:** Management operations (`CreateBucket`, `DescribeInstances`)
+- **Data plane:** Content operations (`PutObject`, `GetRecords` from Kinesis/DynamoDB)
 
-Different endpoints, auth models, and rate limits.
+Different endpoints, rate limits, and IAM action structures apply.
 
-### Regions & Availability Zones
-- **Region:** Geographic area (eu-west-2 = London)
-- **AZ:** Isolated data centre within region (eu-west-2a, eu-west-2b)
-- Some services are **global** (IAM, Route53, CloudFront)
+## IAM & Policy Evaluation
 
-## IAM & Security
+### Policy Evaluation Logic (Strict Order)
+1. **Explicit Deny:** If ANY statement matches an explicit `Deny` $\rightarrow$ **DENY** (Overrides everything).
+2. **Organisational SCP:** If part of AWS Organisations and SCP denies $\rightarrow$ **DENY**.
+3. **Resource Policy:** If S3/KMS/SQS resource policy allows $\rightarrow$ **ALLOW** (unless identity policy denies).
+4. **Identity Policy:** If IAM Role/User policy explicitly allows $\rightarrow$ **ALLOW**.
+5. **Default:** Implicit **DENY**.
 
-### Principal Types
-| Principal | Format | Use Case |
-|-----------|--------|----------|
-| IAM User | `arn:aws:iam::123456789012:user/name` | Human access (discouraged for apps) |
-| IAM Role | `arn:aws:iam::123456789012:role/name` | Apps, cross-account, federation |
-| Service | `service.amazonaws.com` | AWS service acting on your behalf |
-| Federated | `arn:aws:sts::123456789012:federated-user/name` | External IdP users |
-
-### Policy Evaluation Logic
-1. Explicit **Deny** → DENY
-2. **SCP** allows? (if in org) → If no, DENY
-3. **Resource policy** allows? → If yes for some ops, ALLOW
-4. **Identity policy** allows? → If yes, ALLOW
-5. Default → DENY
-
-### Cross-Account Access Pattern
+### Cross-Account Access & Confused Deputy Safeguard
+When granting cross-account access to external roles or third-party platforms, you **MUST** enforce `sts:ExternalId`:
 ```json
 {
   "Version": "2012-10-17",
   "Statement": [{
     "Effect": "Allow",
-    "Principal": { "AWS": "arn:aws:iam::EXTERNAL_ACCOUNT:root" },
+    "Principal": { "AWS": "arn:aws:iam::EXTERNAL_ACCOUNT_ID:root" },
     "Action": "sts:AssumeRole",
     "Condition": {
-      "StringEquals": { "sts:ExternalId": "unique-id-here" }
+      "StringEquals": { "sts:ExternalId": "unique-tenant-uuid-1234" }
     }
   }]
 }
 ```
 
-**Always use ExternalId** for third-party access to prevent confused deputy attacks.
-
-### Service-Linked Roles
-Auto-created by services. Can't modify permissions. Common ones:
-- `AWSServiceRoleForOrganizations`
-- `AWSServiceRoleForConfig`
-- `AWSServiceRoleForSecurityHub`
-- `AWSServiceRoleForAutoScaling`
+### Cross-Account S3 Writes & KMS Ownership Trap
+When Account A writes objects to Account B's S3 bucket:
+- **Bucket Owner Full Control:** Account A must append `--acl bucket-owner-full-control` (or `s3:x-amz-acl` header) on upload, or Account B cannot read the file.
+- **KMS Key Grants:** If encrypted with Account A's KMS key, Account B cannot decrypt unless explicitly added to Account A's KMS key policy.
 
 ## SDK Patterns
 
-### Go SDK (aws-sdk-go-v2)
-
-**Basic client setup:**
-```go
-import (
-    "context"
-    "github.com/aws/aws-sdk-go-v2/config"
-    "github.com/aws/aws-sdk-go-v2/service/ec2"
-)
-
-cfg, err := config.LoadDefaultConfig(context.TODO(),
-    config.WithRegion("eu-west-2"),
-)
-client := ec2.NewFromConfig(cfg)
-```
-
-**Assume role:**
-```go
-import "github.com/aws/aws-sdk-go-v2/credentials/stscreds"
-
-stsClient := sts.NewFromConfig(cfg)
-creds := stscreds.NewAssumeRoleProvider(stsClient, roleARN,
-    func(o *stscreds.AssumeRoleOptions) {
-        o.ExternalID = aws.String(externalID)
-    },
-)
-cfg.Credentials = aws.NewCredentialsCache(creds)
-```
-
-**Pagination:**
-```go
-paginator := ec2.NewDescribeInstancesPaginator(client, &ec2.DescribeInstancesInput{})
-for paginator.HasMorePages() {
-    page, err := paginator.NextPage(context.TODO())
-    if err != nil { return err }
-    for _, reservation := range page.Reservations {
-        for _, instance := range reservation.Instances {
-            // process instance
-        }
-    }
-}
-```
-
-### Python SDK (boto3)
-
-**Basic setup:**
+### Python SDK (boto3) with Adaptive Retry Configuration
 ```python
 import boto3
-
-client = boto3.client('ec2', region_name='eu-west-2')
-# or with assumed role
-sts = boto3.client('sts')
-creds = sts.assume_role(RoleArn=role_arn, ExternalId=external_id, RoleSessionName='session')
-client = boto3.client('ec2',
-    aws_access_key_id=creds['Credentials']['AccessKeyId'],
-    aws_secret_access_key=creds['Credentials']['SecretAccessKey'],
-    aws_session_token=creds['Credentials']['SessionToken'],
-)
-```
-
-**Pagination:**
-```python
-paginator = client.get_paginator('describe_instances')
-for page in paginator.paginate():
-    for reservation in page['Reservations']:
-        for instance in reservation['Instances']:
-            # process instance
-```
-
-**Retry configuration:**
-```python
 from botocore.config import Config
 
+# Enforce adaptive retries for rate-limited AWS APIs (EC2/STS/IAM)
 config = Config(
-    retries={'max_attempts': 10, 'mode': 'adaptive'}
+    retries={'max_attempts': 10, 'mode': 'adaptive'},
+    region_name='eu-west-2'
 )
+
 client = boto3.client('ec2', config=config)
 ```
-
-## Organisations & SCPs
-
-### Hierarchy
-```
-Organisation Root
-  └── OU (Organisational Unit)
-        └── Account
-```
-
-### SCP Behaviour
-- **Deny by default** at each level
-- Child cannot grant what parent denies
-- **Management account is exempt** from SCPs (don't put it in an OU)
-
-### Common SCP Pattern (Region Restriction)
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [{
-    "Sid": "DenyNonUKRegions",
-    "Effect": "Deny",
-    "Action": "*",
-    "Resource": "*",
-    "Condition": {
-      "StringNotEquals": {
-        "aws:RequestedRegion": ["eu-west-1", "eu-west-2"]
-      }
-    }
-  }]
-}
-```
-
-## Common Services
-
-### S3 Quirks
-- **Bucket names are globally unique** across all AWS accounts
-- **Eventual consistency** for overwrite PUTS and DELETES (usually milliseconds now)
-- **Bucket policies** can override IAM (and vice versa — both must allow)
-- `bucket-owner-full-control` ACL needed for cross-account writes
-
-### EC2 Quirks
-- **Instance metadata:** `http://169.254.169.254/latest/meta-data/`
-- **IMDSv2** requires token (more secure): `TOKEN=$(curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")`
-- **Spot instances** can be interrupted with 2-minute warning
-
-### Lambda Quirks
-- **Cold starts:** First invocation slower (especially VPC-attached)
-- **15-minute timeout** maximum
-- **Execution role** must have permissions for any AWS services called
 
 ## Gotchas & Debugging
 
 | Issue | Cause | Fix |
 |-------|-------|-----|
-| `AccessDenied` despite policy | Resource policy denying | Check S3/KMS/SQS resource policy |
-| IAM changes not working | Propagation delay | Wait 10-60 seconds |
-| `MalformedPolicyDocument` | Invalid principal format | Use `AWS` not `Service` for accounts |
-| Cross-account S3 403 | Bucket owner enforcement | Add `bucket-owner-full-control` ACL |
-| AssumeRole fails silently | Missing ExternalId | Check trust policy conditions |
-| `InvalidParameterValue` | Wrong resource ID format | Check ARN vs ID vs name expected |
-
-### Rate Limits
-**Per-account limits** (good for parallel multi-account scanning):
-- EC2 Describe*: ~100 requests/second (varies by call)
-- S3 control plane: 3,500 PUT/POST, 5,500 GET per prefix
-- IAM: 20 requests/second
-- STS AssumeRole: 20 requests/second (but can burst higher)
-
-### Useful CLI Commands
-```bash
-# Who am I?
-aws sts get-caller-identity
-
-# Simulate policy
-aws iam simulate-principal-policy \
-  --policy-source-arn arn:aws:iam::123456789012:role/MyRole \
-  --action-names s3:GetObject \
-  --resource-arns arn:aws:s3:::my-bucket/*
-
-# Decode authorization error message
-aws sts decode-authorization-message --encoded-message <message>
-```
+| `AccessDenied` on S3 Object | Bucket owner mismatch or KMS Key Policy deny | Enforce `bucket-owner-full-control` and update KMS key policy. |
+| IAM propagation delay | IAM changes take 10–60 seconds globally | Implement exponential retry loops. |
+| IMDSv1 Security Warning | Legacy instance metadata service exposed | Enforce IMDSv2 via `HttpTokens=required` on EC2 launch. |

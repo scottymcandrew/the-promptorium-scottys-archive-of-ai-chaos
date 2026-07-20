@@ -31,12 +31,12 @@ Organisation
 - **Control plane:** Resource management (create VM, configure bucket)
 - **Data plane:** Content operations (read objects, query BigQuery)
 
-Unlike Azure, no explicit "isDataAction" — you need to know based on the API.
+Unlike Azure, no explicit `isDataAction` tag — control vs data plane distinction must be understood by the target service API.
 
 ### Regions & Zones
 - **Region:** Geographic area (europe-west2 = London)
 - **Zone:** Isolated location within region (europe-west2-a, -b, -c)
-- **Multi-region:** For geo-redundant storage (eu, us, asia)
+- **Multi-region / Dual-region:** For geo-redundant storage (`nam4`, `eu`, `us`)
 - Some services are **global** (Cloud DNS, IAM)
 
 ## IAM & Security
@@ -46,12 +46,13 @@ Unlike Azure, no explicit "isDataAction" — you need to know based on the API.
 |-----------|--------|----------|
 | User | `user:email@example.com` | Human access |
 | Service Account | `serviceAccount:sa@project.iam.gserviceaccount.com` | Apps, automation |
+| Service Agent | `serviceAccount:service-PROJECT_NUMBER@*.iam.gserviceaccount.com` | GCP system operations (e.g. GCS CMEK) |
 | Group | `group:group@example.com` | Bulk assignment |
 | Domain | `domain:example.com` | All users in domain |
 | allUsers | `allUsers` | Anonymous (public) |
 | allAuthenticatedUsers | `allAuthenticatedUsers` | Any Google account |
 
-### IAM Policy Model
+### IAM Policy Model & Evaluation
 **Additive only** — GCP IAM has no explicit deny (use Organisation Policies for restrictions).
 
 ```json
@@ -63,31 +64,17 @@ Unlike Azure, no explicit "isDataAction" — you need to know based on the API.
 }
 ```
 
-### Common Roles
-| Role | Access Level |
-|------|--------------|
-| roles/owner | Full access + IAM management |
-| roles/editor | Full access, no IAM |
-| roles/viewer | Read-only |
-| roles/browser | List projects/folders only |
+### Double-IAM Requirement for CMEK Encrypted Data
+For a principal (or service account) to read or write a CMEK-encrypted GCS object, it must hold **BOTH**:
+1. **Data-Plane Role:** `roles/storage.objectViewer` or `objectAdmin` on the bucket.
+2. **KMS Crypto Role:** `roles/cloudkms.cryptoKeyEncrypterDecrypter` on the KMS key.
+*Gotcha:* If either is missing, GCS obscures the failure and returns a `404 Not Found` or generic `403 Access Denied` to prevent object enumeration.
 
-### Service Accounts
-**Two types:**
-- **User-managed:** You create and control
-- **Service agents:** Auto-created by GCP services (format: `service-PROJECT_NUMBER@*.iam.gserviceaccount.com`)
-
-**Key management:**
-- Prefer **Workload Identity Federation** over keys
-- Keys don't expire — easy to leak
-- Use **short-lived tokens** when possible
-
-### Workload Identity Federation
-Federate external identities (AWS, Azure, OIDC) without GCP keys:
-```bash
-gcloud iam workload-identity-pools create "external-pool" \
-  --location="global" \
-  --display-name="External Identity Pool"
-```
+### Service Accounts & Workload Identity Federation (WIF)
+- **User-managed:** You create and control.
+- **Service agents:** Auto-created by GCP services (e.g. `service-PROJECT_NUMBER@gs-project-accounts.iam.gserviceaccount.com`).
+- **WIF Token Downscoping:** When federating external OIDC (AWS/Azure/Keycloak) via STS `generateAccessToken`, you **MUST** explicitly request the scope `https://www.googleapis.com/auth/cloud-platform`.
+- **Cross-Project `actAs`:** To launch jobs in `Project B` using a Service Account in `Project B` from a Service Account in `Project A`, `sa-project-a` must hold `roles/iam.serviceAccountUser` specifically on `sa-project-b`.
 
 ## SDK Patterns
 
@@ -104,165 +91,48 @@ import (
 // Default credentials (ADC)
 client, err := compute.NewInstancesRESTClient(context.Background())
 
-// Explicit credentials file
-client, err := compute.NewInstancesRESTClient(context.Background(),
-    option.WithCredentialsFile("/path/to/key.json"),
-)
-
-// Impersonation
+// Impersonation with Cloud Platform Scope
 client, err := compute.NewInstancesRESTClient(context.Background(),
     option.ImpersonateCredentials("target-sa@project.iam.gserviceaccount.com"),
+    option.WithScopes("https://www.googleapis.com/auth/cloud-platform"),
 )
-```
-
-**Pagination:**
-```go
-import computepb "cloud.google.com/go/compute/apiv1/computepb"
-
-req := &computepb.AggregatedListInstancesRequest{Project: projectID}
-it := client.AggregatedList(context.Background(), req)
-for {
-    pair, err := it.Next()
-    if err == iterator.Done { break }
-    if err != nil { return err }
-    for _, instance := range pair.Value.Instances {
-        // process instance
-    }
-}
 ```
 
 ### Python SDK (google-cloud-python)
 
-**Authentication:**
+**Resilient GCS CMEK Upload with KMS Retry Predicate:**
 ```python
-from google.cloud import compute_v1
-from google.oauth2 import service_account
+from google.cloud import storage
+from google.api_core import exceptions, retry
 
-# Default credentials
-client = compute_v1.InstancesClient()
+def _is_kms_retryable(exc: Exception) -> bool:
+    if isinstance(exc, (exceptions.TooManyRequests, exceptions.ServiceUnavailable)):
+        return True
+    if isinstance(exc, exceptions.Forbidden) and "Cloud KMS CryptoKey" in str(exc):
+        return True # Throttled KEK requests manifest as 403s
+    return False
 
-# Explicit credentials
-credentials = service_account.Credentials.from_service_account_file('/path/to/key.json')
-client = compute_v1.InstancesClient(credentials=credentials)
-
-# Impersonation
-from google.auth import impersonated_credentials
-target_credentials = impersonated_credentials.Credentials(
-    source_credentials=credentials,
-    target_principal='target-sa@project.iam.gserviceaccount.com',
-    target_scopes=['https://www.googleapis.com/auth/cloud-platform']
+kms_upload_retry = retry.Retry(
+    predicate=_is_kms_retryable,
+    initial=0.5,
+    maximum=10.0,
+    multiplier=2.0,
+    deadline=60.0
 )
+
+client = storage.Client()
+bucket = client.bucket("my-cmek-bucket")
+blob = bucket.blob("batch_01.parquet")
+kms_upload_retry(blob.upload_from_filename)("local_file.parquet")
 ```
-
-**Pagination:**
-```python
-from google.cloud import compute_v1
-
-client = compute_v1.InstancesClient()
-for zone, response in client.aggregated_list(project=project_id):
-    if response.instances:
-        for instance in response.instances:
-            # process instance
-```
-
-**Cloud Asset Inventory (bulk queries):**
-```python
-from google.cloud import asset_v1
-
-client = asset_v1.AssetServiceClient()
-response = client.search_all_resources(
-    scope=f"organizations/{org_id}",
-    asset_types=["compute.googleapis.com/Instance"],
-)
-for resource in response:
-    # process resource
-```
-
-## Organisation Structure
-
-### Organisation Policies (Not IAM)
-Use for restrictions — since IAM has no deny:
-```bash
-gcloud resource-manager org-policies set-policy policy.yaml --organization=ORG_ID
-```
-
-Common constraints:
-- `gcp.resourceLocations` — Restrict regions
-- `iam.allowedPolicyMemberDomains` — Restrict sharing
-- `compute.vmExternalIpAccess` — Deny external IPs
-
-### Folder-Level IAM
-```bash
-gcloud resource-manager folders add-iam-policy-binding FOLDER_ID \
-  --member="group:viewers@example.com" \
-  --role="roles/viewer"
-```
-
-## Common Services
-
-### Cloud Storage Quirks
-- **Bucket names globally unique** (like S3)
-- **Strong consistency** since 2021 (unlike S3's historical eventual consistency)
-- **Uniform vs Fine-grained ACLs:** Uniform recommended (bucket-level only)
-- **Object versioning:** Optional, not on by default
-- **Lifecycle rules:** Delete old versions, transition storage class
-
-### Compute Engine Quirks
-- **Metadata server:** `http://metadata.google.internal/computeMetadata/v1/`
-  - Requires header: `Metadata-Flavor: Google`
-- **Instance identity token:** `/instance/service-accounts/default/identity?audience=AUDIENCE`
-- **Preemptible/Spot VMs:** Cheaper, max 24h lifetime, can be terminated
-
-### BigQuery Quirks
-- **Serverless** — no infrastructure to manage
-- **Slots:** Query processing capacity (on-demand vs reserved)
-- **Streaming inserts:** Near real-time, but costs more than batch loads
-- **Partitioning & clustering:** Critical for cost/performance
 
 ## Gotchas & Debugging
 
-| Issue | Cause | Fix |
+### Quotas & Misleading Error Messages (CRITICAL)
+
+| Issue / Error | Real Cause | Remediation |
 |-------|-------|-----|
-| `PERMISSION_DENIED` with correct role | API not enabled | Enable API on project |
-| IAM changes delayed | Eventual consistency | Wait 60+ seconds |
-| Can't create resources | Billing not linked | Link billing account |
-| Terraform destroy fails | Lien on project | Remove lien first |
-| SA key auth fails | Key deleted/rotated | Regenerate or use WIF |
-| Cross-project denied | Missing service agent role | Grant explicitly |
-
-### Rate Limits (CRITICAL)
-
-**Service-account-scoped limits:**
-Unlike AWS (per-account) or Azure (per-subscription for ARM), GCP limits follow the **caller**.
-
-| API | Limit | Scope |
-|-----|-------|-------|
-| Compute Engine | 20 req/sec | Per service account |
-| Cloud Storage | 1 req/sec (list) | Per service account |
-| Resource Manager | 5 req/sec | Per service account |
-| Cloud Asset API | 100 req/100 sec | Per organisation |
-
-**Mitigation:**
-1. Use **Cloud Asset Inventory** for bulk discovery
-2. Use **multiple service accounts** to parallelise
-3. Cache aggressively
-
-### Useful CLI Commands
-```bash
-# Who am I?
-gcloud auth list
-gcloud config get-value account
-
-# Check IAM policy
-gcloud projects get-iam-policy PROJECT_ID
-
-# Test permissions
-gcloud asset analyze-iam-policy \
-  --organization=ORG_ID \
-  --identity="serviceAccount:sa@project.iam.gserviceaccount.com" \
-  --full-resource-name="//compute.googleapis.com/projects/PROJECT/zones/ZONE/instances/INSTANCE"
-
-# Cloud Asset search
-gcloud asset search-all-resources --scope=organizations/ORG_ID \
-  --asset-types="compute.googleapis.com/Instance"
-```
+| `403 Forbidden: service account does not have permission on Cloud KMS key...` | **KMS Quota Saturation:** High-concurrency writes (`>2,000 files/sec`) exhaust the KMS `crypto_requests` quota. GCS wraps quota failures in a `403`. | Request Cloud KMS quota increase in location (`nam4`/`global`) or implement exponential retry jitter. |
+| `FAILED_PRECONDITION: Object gs://... does not exist` immediately after upload | **Dual-Region Replication Lag:** Multi-region or dual-region GCS buckets without Turbo replication experience sub-second cross-region RPO lag. | Enable `rpo = "ASYNC_TURBO"` on dual-region buckets or add explicit `blob.exists()` verification loop prior to downstream jobs. |
+| `PERMISSION_DENIED` with correct role | **API Not Enabled:** API is disabled on the target project. | Enable API via `gcloud services enable <api>.googleapis.com`. |
+| Cross-project `ActAs` denied | **Missing `serviceAccountUser`:** Impersonating SA lacks `roles/iam.serviceAccountUser` on target SA. | Grant `roles/iam.serviceAccountUser` on the target SA resource. |
