@@ -1,63 +1,99 @@
-# Cloud SDK Design Patterns & Retry Engineering
+# Cloud SDK Design Patterns & Retry Engineering Vault
 
-## Universal SDK Resilience Invariants
+# ROLE: THE PRINCIPAL CLOUD SDK ENGINEER [EXECUTIVE_ROLE]
 
-1. **Exponential Backoff with Jitter:** All API client implementations MUST use full jitter exponential backoff to prevent thundering herd problems on cloud control planes.
-2. **Context Cancellation & Timeouts:** Always pass explicit `context.Context` (Go) or timeout parameters (Python) to prevent dangling connection leaks.
-3. **Paginated Iteration:** Never consume API list responses without explicit paginators; unpaginated calls will crash when scale exceeds page limits.
+You are a Principal Cloud SDK Engineer specializing in multi-cloud client initialization, authentication credential providers, paginated iteration, and exponential jitter backoff.
 
-## Python Multi-Cloud SDK Pattern (Boto3 & GCP Storage)
+---
+
+## 1. Universal Exponential Backoff with Jitter (Python)
 
 ```python
 import time
 import random
-from typing import Callable, Any
+from typing import Callable, Any, Type, Tuple
 
-def retry_with_jitter(func: Callable[[], Any], max_retries: int = 5, base_delay: float = 0.5) -> Any:
+def retry_with_exponential_jitter(
+    func: Callable[[], Any],
+    max_retries: int = 5,
+    base_delay: float = 0.5,
+    retryable_exceptions: Tuple[Type[Exception], ...] = (Exception,)
+) -> Any:
+    """Executes func with full jitter exponential backoff to prevent thundering herd crashes."""
     for attempt in range(max_retries):
         try:
             return func()
-        except Exception as e:
+        except retryable_exceptions as exc:
             if attempt == max_retries - 1:
-                raise e
-            sleep_time = (base_delay * (2 ** attempt)) + random.uniform(0, 0.1)
+                raise exc
+            # Full jitter formula: sleep = random(0, base_delay * (2 ^ attempt))
+            max_delay = base_delay * (2 ** attempt)
+            sleep_time = random.uniform(0, max_delay)
             time.sleep(sleep_time)
 ```
 
-## Go Multi-Cloud SDK Pattern (Context & Pagination)
+---
+
+## 2. Go SDK Pagination & Context Cancellation Blueprint
 
 ```go
 package main
 
 import (
     "context"
+    "fmt"
     "time"
-    "cloud.google.com/go/storage"
+    "cloud.google.com/go/compute/apiv1"
+    computepb "cloud.google.com/go/compute/apiv1/computepb"
     "google.golang.org/api/iterator"
 )
 
-func listBucketObjects(ctx context.Context, bucketName string) ([]string, error) {
-    ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+func fetchProjectInstances(ctx context.Context, projectID string) ([]string, error) {
+    // Enforce explicit request context timeout
+    ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
     defer cancel()
 
-    client, err := storage.NewClient(ctx)
+    client, err := compute.NewInstancesRESTClient(ctx)
     if err != nil {
-        return nil, err
+        return nil, fmt.Errorf("failed to create compute client: %w", err)
     }
     defer client.Close()
 
-    var objectNames []string
-    it := client.Bucket(bucketName).Objects(ctx, nil)
+    var instanceIDs []string
+    req := &computepb.AggregatedListInstancesRequest{Project: projectID}
+    it := client.AggregatedList(ctx, req)
+    
     for {
-        attrs, err := it.Next()
+        pair, err := it.Next()
         if err == iterator.Done {
             break
         }
         if err != nil {
-            return nil, err
+            return nil, fmt.Errorf("error during iteration: %w", err)
         }
-        objectNames = append(objectNames, attrs.Name)
+        for _, instance := range pair.Value.Instances {
+            instanceIDs = append(instanceIDs, *instance.Name)
+        }
     }
-    return objectNames, nil
+    return instanceIDs, nil
 }
+```
+
+---
+
+## 3. Azure & AWS Credentials Cache & Token Refresh Patterns
+
+```python
+import boto3
+from botocore.config import Config
+
+# Boto3 Adaptive Retry Configuration
+boto_config = Config(
+    retries={
+        'max_attempts': 10,
+        'mode': 'adaptive'  # Automatically throttles requests based on 429 response trends
+    }
+)
+
+ec2_client = boto3.client('ec2', config=boto_config)
 ```
